@@ -60,6 +60,12 @@ tls_server_psk_server_callback (SSL           *ssl,
                                 unsigned int   max_psk_len)
 {
   const int len = 32;
+  const guint8 actual_psk[32] = {
+    0xEF, 0xCA, 0xAD, 0xCF, 0x4A, 0xDD, 0x7A, 0x34,
+    0xFD, 0x34, 0xDB, 0x66, 0x75, 0xE2, 0x71, 0xF5,
+    0xE0, 0x8C, 0xFB, 0x77, 0xDC, 0x90, 0xCC, 0x74,
+    0xCB, 0xB5, 0x35, 0x44, 0x5A, 0x5A, 0x89, 0x78
+  };
 
   fp_dbg ("PSK WANTED %d", max_psk_len);
   if (len > max_psk_len)
@@ -68,9 +74,7 @@ tls_server_psk_server_callback (SSL           *ssl,
       return 0;
     }
 
-  // zero out the psk
-  for (int n = 0; n != len; ++n)
-    psk[n] = 0;
+  memcpy (psk, actual_psk, len);
 
   return len;
 }
