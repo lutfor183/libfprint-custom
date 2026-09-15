@@ -1,8 +1,12 @@
-// Goodix Tls driver for libfprint
+// Goodix Tls driver for libfprint - Lutfor custom variant
+// Custom driver for Goodix 27c6:5117 maintained by Lutfor <lutfor183.du@gmail.com>
+// Device protocol & PSK/signature reverse engineered by Lutfor
+// Renamed to lutfor511 to avoid conflict with regular fprint driver
 
 // Copyright (C) 2021 Alexander Meiler <alex.meiler@protonmail.com>
 // Copyright (C) 2021 Matthieu CHARETTE <matthieu.charette@gmail.com>
 // Copyright (C) 2021 Natasha England-Elbro <natasha@natashaee.me>
+// Copyright (C) 2026 Lutfor <lutfor183.du@gmail.com>
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -21,7 +25,7 @@
 #include "fp-image-device.h"
 #include "fpi-image-device.h"
 #include "fpi-ssm.h"
-#define FP_COMPONENT "goodixtls5xx"
+#define FP_COMPONENT "lutfor5xx"
 
 #include "drivers/goodixtls/goodix5xx.h"
 #include "drivers_api.h"
@@ -33,9 +37,75 @@ typedef struct
 {
   guint8 * otp; // TODO: Remove
   GoodixTls5xxPix* calibration_img;
+
+  gboolean prov_valid; /* FW/PSK/OTP verified this open */
+
+  gboolean calib_valid; /* cached calibration usable */
+  gint64 calib_mtime;
+  guint calib_uses;
+  guint32 calib_raw_len;
+
+  GoodixTls5xxPix *reuse_raw; /* reused capture buffers */
+  guint8 *reuse_squashed;
 } FpiDeviceGoodixTls5xxPrivate;
 
+#define CALIB_MAX_USES 8
+#define CALIB_MAX_AGE_US (60 * G_USEC_PER_SEC)
+
 G_DEFINE_ABSTRACT_TYPE_WITH_PRIVATE (FpiDeviceGoodixTls5xx, fpi_device_goodixtls5xx, FPI_TYPE_DEVICE_GOODIXTLS)
+
+/* Expected decrypted frame size for the device class:
+ * 8 header + (w*h)/4*6 packed + 5 trailer. 511: 8+7040/4*6+5 = 10573. */
+static guint32
+goodixtls5xx_expected_raw_len (FpiDeviceGoodixTls5xxClass *cls)
+{
+  return 8 + ((guint32) cls->scan_width * cls->scan_height) / 4 * 6 + 5;
+}
+
+gboolean
+goodixtls5xx_is_provisioned (FpDevice *dev)
+{
+  FpiDeviceGoodixTls5xx *self = FPI_DEVICE_GOODIXTLS5XX (dev);
+  FpiDeviceGoodixTls5xxPrivate *priv =
+    fpi_device_goodixtls5xx_get_instance_private (self);
+  return priv->prov_valid;
+}
+
+void
+goodixtls5xx_set_provisioned (FpDevice *dev, gboolean valid)
+{
+  FpiDeviceGoodixTls5xx *self = FPI_DEVICE_GOODIXTLS5XX (dev);
+  FpiDeviceGoodixTls5xxPrivate *priv =
+    fpi_device_goodixtls5xx_get_instance_private (self);
+  priv->prov_valid = valid;
+}
+
+static gboolean
+calib_reusable (FpiDeviceGoodixTls5xx *self)
+{
+  FpiDeviceGoodixTls5xxPrivate *priv =
+    fpi_device_goodixtls5xx_get_instance_private (self);
+  FpiDeviceGoodixTls5xxClass *cls = FPI_DEVICE_GOODIXTLS5XX_GET_CLASS (self);
+
+  if (!priv->calib_valid || !priv->calibration_img)
+    return FALSE;
+  if (priv->calib_raw_len != goodixtls5xx_expected_raw_len (cls))
+    return FALSE;
+  if (priv->calib_uses >= CALIB_MAX_USES)
+    return FALSE;
+  if (g_get_monotonic_time () - priv->calib_mtime > CALIB_MAX_AGE_US)
+    return FALSE;
+  return TRUE;
+}
+
+void
+goodixtls5xx_invalidate_calib (FpDevice *dev)
+{
+  FpiDeviceGoodixTls5xx *self = FPI_DEVICE_GOODIXTLS5XX (dev);
+  FpiDeviceGoodixTls5xxPrivate *priv =
+    fpi_device_goodixtls5xx_get_instance_private (self);
+  priv->calib_valid = FALSE;
+}
 
 enum CALIBRATION_STAGES {
   CALIBRATION_STAGE_FDT_UP,
@@ -75,10 +145,33 @@ static void on_calibrate_scan(FpDevice* dev, guint8* data, guint16 len, gpointer
   FpiDeviceGoodixTls5xx* self = FPI_DEVICE_GOODIXTLS5XX(dev);
   FpiDeviceGoodixTls5xxPrivate* priv = fpi_device_goodixtls5xx_get_instance_private(self);
   FpiDeviceGoodixTls5xxClass * cls = FPI_DEVICE_GOODIXTLS5XX_GET_CLASS (self);
+  /* Exact size: truncated frames poison the reused baseline. */
+  guint32 expected = goodixtls5xx_expected_raw_len (cls);
+  if (data == NULL || len != expected)
+    {
+      fpi_ssm_mark_failed (ssm, g_error_new (G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+                                             "calibration image length %u != expected %u",
+                                             len, expected));
+      goodixtls5xx_invalidate_calib (dev);
+      return;
+    }
   if (!priv->calibration_img) {
     priv->calibration_img = calloc(cls->scan_height * cls->scan_width, sizeof(GoodixTls5xxPix));
+    if (!priv->calibration_img)
+      {
+        fpi_ssm_mark_failed (ssm, g_error_new (G_IO_ERROR, G_IO_ERROR_FAILED,
+                                               "out of memory for calibration image"));
+        return;
+      }
   }
+  /* Zero first: no stale tail on reuse. */
+  memset (priv->calibration_img, 0,
+          cls->scan_height * cls->scan_width * sizeof (GoodixTls5xxPix));
   goodixtls5xx_decode_frame(priv->calibration_img, len, data);
+  priv->calib_valid = TRUE;
+  priv->calib_mtime = g_get_monotonic_time ();
+  priv->calib_uses = 0;
+  priv->calib_raw_len = len;
 
   fpi_ssm_next_state(ssm);
 }
@@ -154,8 +247,7 @@ goodixtls5xx_check_preset_psk_read (FpDevice *dev, gboolean success,
                                     guint32 flags, guint8 *psk, guint16 length,
                                     gpointer user_data, GError *error)
 {
-  g_autofree gchar *psk_str = data_to_str (psk, length);
-
+  /* Validate before data_to_str (psk==NULL on error). */
   if (error)
     {
       fpi_ssm_mark_failed (user_data, error);
@@ -169,6 +261,8 @@ goodixtls5xx_check_preset_psk_read (FpDevice *dev, gboolean success,
       fpi_ssm_mark_failed (user_data, error);
       return;
     }
+
+  g_autofree gchar *psk_str = data_to_str (psk, length);
 
   fp_dbg ("Device PSK: 0x%s", psk_str);
   fp_dbg ("Device PSK flags: 0x%08x", flags);
@@ -254,6 +348,9 @@ goodixtls5xx_check_reset (FpDevice *dev, gboolean success, guint16 number,
     {
       g_set_error (&error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
                    "Invalid device reset number: %d", number);
+      /* Sensor changed: drop provisioning cache. */
+      goodixtls5xx_set_provisioned (dev, FALSE);
+      goodixtls5xx_invalidate_calib (dev);
       fpi_ssm_mark_failed (user_data, error);
       return;
     }
@@ -277,6 +374,8 @@ goodixtls5xx_check_powerdown_scan_freq (FpDevice *dev, gboolean success,
     }
   else
     {
+      /* Full activation OK: provisioning cache valid. */
+      goodixtls5xx_set_provisioned (dev, TRUE);
       fpi_ssm_next_state (user_data);
     }
 }
@@ -322,20 +421,53 @@ scan_on_read_img (FpDevice *dev, guint8 *data, guint16 len,
       return;
     }
 
+  /* Exact size: truncated frames must fail, not decode to garbage. */
   FpImageDevice * img_dev = FP_IMAGE_DEVICE (dev);
 
   FpiDeviceGoodixTls5xx* self = FPI_DEVICE_GOODIXTLS5XX(dev);
   FpiDeviceGoodixTls5xxPrivate* priv = fpi_device_goodixtls5xx_get_instance_private(self);
   FpiDeviceGoodixTls5xxClass *cls = FPI_DEVICE_GOODIXTLS5XX_GET_CLASS (dev);
 
-  GoodixTls5xxPix * raw_frame = calloc (cls->scan_width * cls->scan_height, sizeof (GoodixTls5xxPix));
+  /* Exact size: truncated frames must fail. */
+  guint32 expected = goodixtls5xx_expected_raw_len (cls);
+  if (data == NULL || len != expected)
+    {
+      fpi_ssm_mark_failed (ssm, g_error_new (G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+                                             "capture image length %u != expected %u",
+                                             len, expected));
+      goodixtls5xx_invalidate_calib (dev);
+      return;
+    }
+
+  if (!priv->calibration_img || !priv->calib_valid)
+    {
+      fpi_ssm_mark_failed (ssm, g_error_new (G_IO_ERROR, G_IO_ERROR_FAILED,
+                                             "no calibration image for capture"));
+      return;
+    }
+
+  /* Reused buffers: alloc once, memset per use. */
+  guint npix = cls->scan_width * cls->scan_height;
+  if (!priv->reuse_raw)
+    priv->reuse_raw = calloc (npix, sizeof (GoodixTls5xxPix));
+  if (!priv->reuse_squashed)
+    priv->reuse_squashed = calloc (npix, 1);
+  if (!priv->reuse_raw || !priv->reuse_squashed)
+    {
+      fpi_ssm_mark_failed (ssm, g_error_new (G_IO_ERROR, G_IO_ERROR_FAILED,
+                                             "out of memory for capture"));
+      return;
+    }
+  GoodixTls5xxPix * raw_frame = priv->reuse_raw;
+  guint8 * squashed = priv->reuse_squashed;
+  memset (raw_frame, 0, npix * sizeof (GoodixTls5xxPix));
   goodixtls5xx_decode_frame (raw_frame, len, data);
-  linear_subtract_inplace(raw_frame, priv->calibration_img, cls->scan_width * cls->scan_height);
-  guint8 * squashed = calloc (cls->scan_height * cls->scan_width, 1);
-  goodixtls5xx_squash_frame_linear (raw_frame, squashed, cls->scan_height * cls->scan_width);
-  free (raw_frame);
-  FpImage * img = cls->process_frame (squashed);
-  free(squashed);
+  linear_subtract_inplace(raw_frame, priv->calibration_img, npix);
+  goodixtls5xx_squash_frame_linear (raw_frame, squashed, npix);
+  priv->calib_uses++;
+  guint8 *frame_copy = g_memdup (squashed, npix);
+  FpImage * img = cls->process_frame (frame_copy);
+  g_free (frame_copy);
 
   fpi_image_device_image_captured (img_dev, img);
 
@@ -377,7 +509,11 @@ scan_run_state (FpiSsm * ssm, FpDevice * dev)
       break;
 
     case SCAN_STAGE_CALIBRATE:
-      do_calibration(dev, ssm);
+      /* Reuse fresh calibration: saves one capture per scan. */
+      if (calib_reusable (FPI_DEVICE_GOODIXTLS5XX (dev)))
+        fpi_ssm_next_state (ssm);
+      else
+        do_calibration(dev, ssm);
       break;
     case SCAN_STAGE_SWITCH_TO_FDT_DOWN:
       send_switch_mode (dev, ssm, goodix_send_mcu_switch_to_fdt_down );
@@ -405,6 +541,8 @@ scan_complete (FpiSsm *ssm, FpDevice *dev, GError *error)
   if (error)
     {
       fp_err ("failed to scan: %s (code: %d)", error->message, error->code);
+      /* Failed capture: force calibration refresh. */
+      goodixtls5xx_invalidate_calib (dev);
       fpi_image_device_session_error (FP_IMAGE_DEVICE (dev), error);
       return;
     }
@@ -423,7 +561,16 @@ goodixtls5xx_decode_frame (GoodixTls5xxPix * frame, guint32 frame_size, const gu
 {
   GoodixTls5xxPix *pix = frame;
 
-  for (int i = 8; i != frame_size - 5; i += 6)
+  /* R1: guard against truncated/corrupt TLS images. Old loop used
+   * `i != frame_size - 5` with guint32 arithmetic: frame_size < 13
+   * underflows to a huge value -> OOB read + heap overflow. */
+  if (frame_size < 8 + 6 + 5)
+    {
+      fp_warn ("decode_frame: truncated image (%u bytes), ignoring", frame_size);
+      return;
+    }
+
+  for (guint32 i = 8; i + 5 + 1 <= frame_size; i += 6)
     {
       const guint8 *chunk = raw_frame + i;
       *pix++ = ((chunk[0] & 0xf) << 8) + chunk[1];
@@ -527,14 +674,10 @@ static void
 tls_activation_complete (FpDevice *dev, gpointer user_data,
                          GError *error)
 {
+  /* Always complete: hanging here wedges fprintd. */
   if (error)
-    {
-      fp_err ("failed to complete tls activation: %s", error->message);
-      return;
-    }
-  FpImageDevice *image_dev = FP_IMAGE_DEVICE (dev);
-
-  fpi_image_device_activate_complete (image_dev, error);
+    fp_err ("failed to complete tls activation: %s", error->message);
+  fpi_image_device_activate_complete (FP_IMAGE_DEVICE (dev), error);
 }
 
 void
@@ -566,10 +709,27 @@ fpi_device_goodixtls5xx_init (FpiDeviceGoodixTls5xx * self)
   FpiDeviceGoodixTls5xxPrivate* priv = fpi_device_goodixtls5xx_get_instance_private(self);
   priv->calibration_img = NULL;
   priv->otp = NULL;
+  priv->prov_valid = FALSE;
+  priv->calib_valid = FALSE;
+  priv->calib_mtime = 0;
+  priv->calib_uses = 0;
+  priv->calib_raw_len = 0;
+  priv->reuse_raw = NULL;
+  priv->reuse_squashed = NULL;
 }
 
 void goodixtls5xx_cleanup(FpiDeviceGoodixTls5xx* dev) {
   FpiDeviceGoodixTls5xxPrivate* priv = fpi_device_goodixtls5xx_get_instance_private(dev);
-  g_free(priv->calibration_img);
+  /* calloc/free (not g_malloc/g_free). */
+  free(priv->calibration_img);
   priv->calibration_img = NULL;
+  /* No reuse across deactivate (MCU resets). */
+  priv->prov_valid = FALSE;
+  priv->calib_valid = FALSE;
+  priv->calib_uses = 0;
+  priv->calib_raw_len = 0;
+  free(priv->reuse_raw);
+  priv->reuse_raw = NULL;
+  free(priv->reuse_squashed);
+  priv->reuse_squashed = NULL;
 }

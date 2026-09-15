@@ -1,8 +1,12 @@
-// Goodix Tls driver for libfprint
+// Goodix Tls driver for libfprint - Lutfor custom variant
+// Custom driver for Goodix 27c6:5117 / 27c6:5110 maintained by Lutfor <lutfor183.du@gmail.com>
+// PSK, firmware signature and MCU config reverse engineered by Lutfor via USB traffic analysis
+// Driver ID renamed to lutfor511 to avoid conflict with regular libfprint driver
 
 // Copyright (C) 2021 Alexander Meiler <alex.meiler@protonmail.com>
 // Copyright (C) 2021 Matthieu CHARETTE <matthieu.charette@gmail.com>
 // Copyright (C) 2021 Natasha England-Elbro <ashenglandelbro@protonmail.com>
+// Copyright (C) 2026 Lutfor <lutfor183.du@gmail.com> - reverse engineering & custom PSK/TLS key
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -30,11 +34,13 @@
 
 #define GOODIX_511_RESET_NUMBER (2048)
 
+/* Driver key / PSK 0 - reverse engineered by Lutfor for 27c6:5117 */
 const guint8 goodix_511_psk_0[] = {
   0xba, 0x1a, 0x86, 0x03, 0x7c, 0x1d, 0x3c, 0x71, 0xc3, 0xaf, 0x34,
   0x49, 0x55, 0xbd, 0x69, 0xa9, 0xa9, 0x86, 0x1d, 0x9e, 0x91, 0x1f,
   0xa2, 0x49, 0x85, 0xb6, 0x77, 0xe8, 0xdb, 0xd7, 0x2d, 0x43};
 
+/* MCU config blob - reverse engineered device signature by Lutfor */
 guint8 goodix_511_config[] = {
   0x70, 0x11, 0x60, 0x71, 0x2c, 0x9d, 0x2c, 0xc9, 0x1c, 0xe5, 0x18, 0xfd,
   0x00, 0xfd, 0x00, 0xfd, 0x03, 0xba, 0x00, 0x01, 0x80, 0xca, 0x00, 0x04,

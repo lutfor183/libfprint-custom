@@ -1,8 +1,12 @@
-// Goodix Tls driver for libfprint
+// Goodix Tls driver for libfprint - Lutfor custom variant
+// Custom driver for Goodix 27c6:5117 maintained by Lutfor <lutfor183.du@gmail.com>
+// Protocol, TLS PSK key and device signature reverse engineered by Lutfor
+// Driver renamed from goodixtls511 -> lutfor511 to avoid conflict with regular fprint
 
 // Copyright (C) 2021 Alexander Meiler <alex.meiler@protonmail.com>
 // Copyright (C) 2021 Matthieu CHARETTE <matthieu.charette@gmail.com>
 // Copyright (C) 2021 Natasha England-Elbro <natasha@natashaee.me>
+// Copyright (C) 2026 Lutfor <lutfor183.du@gmail.com>
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -32,7 +36,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define FP_COMPONENT "goodixtls511"
+#define FP_COMPONENT "lutfor511"
 
 #include <glib.h>
 #include <string.h>
@@ -173,24 +177,34 @@ activate_run_state (FpiSsm *ssm, FpDevice *dev)
       break;
 
     case ACTIVATE_CHECK_FW_VER:
-      goodix_send_query_firmware_version (dev, goodixtls5xx_check_firmware_version, ssm);
+      /* Skip static FW/PSK/OTP re-query when provisioned. */
+      if (goodixtls5xx_is_provisioned (dev))
+        fpi_ssm_next_state (ssm);
+      else
+        goodix_send_query_firmware_version (dev, goodixtls5xx_check_firmware_version, ssm);
       break;
 
     case ACTIVATE_CHECK_PSK:
-      goodix_send_preset_psk_read (dev, GOODIX_511_PSK_FLAGS, 0,
-                                   goodixtls5xx_check_preset_psk_read, ssm);
+      if (goodixtls5xx_is_provisioned (dev))
+        fpi_ssm_next_state (ssm);
+      else
+        goodix_send_preset_psk_read (dev, GOODIX_511_PSK_FLAGS, 0,
+                                     goodixtls5xx_check_preset_psk_read, ssm);
       break;
 
     case ACTIVATE_RESET:
-      goodix_send_reset (dev, TRUE, 20, goodixtls5xx_check_reset, ssm);
+      goodix_send_reset (dev, TRUE, 5, goodixtls5xx_check_reset, ssm);
       break;
 
     case ACTIVATE_SET_MCU_IDLE:
-      goodix_send_mcu_switch_to_idle_mode (dev, 20, goodixtls5xx_check_idle, ssm);
+      goodix_send_mcu_switch_to_idle_mode (dev, 5, goodixtls5xx_check_idle, ssm);
       break;
 
     case ACTIVATE_READ_ODP:
-      goodix_send_read_otp (dev, read_otp_callback, ssm);
+      if (goodixtls5xx_is_provisioned (dev))
+        fpi_ssm_next_state (ssm);
+      else
+        goodix_send_read_otp (dev, read_otp_callback, ssm);
       break;
 
     case ACTIVATE_UPLOAD_MCU_CONFIG:
@@ -200,6 +214,7 @@ activate_run_state (FpiSsm *ssm, FpDevice *dev)
       break;
 
     case ACTIVATE_SET_POWERDOWN_SCAN_FREQUENCY:
+      /* 100: gentle idle polling (200 doubles wakeups). */
       goodix_send_set_powerdown_scan_frequency (
         dev, 100, goodixtls5xx_check_powerdown_scan_freq, ssm);
       break;
@@ -282,14 +297,11 @@ crop_frame (guint8 * frame)
   FpImage * img = fp_image_new (GOODIX511_WIDTH, GOODIX511_HEIGHT);
 
   img->flags |= FPI_IMAGE_PARTIAL;
+  /* Row memcpy: identical output, faster. */
   for (int y = 0; y != GOODIX511_HEIGHT; ++y)
-    {
-      for (int x = 0; x != GOODIX511_WIDTH; ++x)
-        {
-          const int idx = x + y * GOODIX511_SCAN_WIDTH;
-          img->data[x + y * GOODIX511_WIDTH] = frame[idx];
-        }
-    }
+    memcpy (img->data + y * GOODIX511_WIDTH,
+            frame + y * GOODIX511_SCAN_WIDTH,
+            GOODIX511_WIDTH);
   return img;
 }
 
@@ -315,8 +327,8 @@ fpi_device_goodixtls511_class_init (FpiDeviceGoodixTls511Class * class)
   gx_class->ep_in = GOODIX_511_EP_IN;
   gx_class->ep_out = GOODIX_511_EP_OUT;
 
-  dev_class->id = "goodixtls511";
-  dev_class->full_name = "Goodix TLS Fingerprint Sensor 511";
+  dev_class->id = "lutfor511";
+  dev_class->full_name = "Lutfor Goodix 511 TLS Fingerprint Sensor (Reverse Engineered)";
   dev_class->type = FP_DEVICE_TYPE_USB;
   dev_class->id_table = id_table;
   dev_class->nr_enroll_stages = 20;

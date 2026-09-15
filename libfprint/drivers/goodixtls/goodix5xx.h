@@ -86,6 +86,24 @@ struct _FpiDeviceGoodixTls5xxClass
 };
 
 /**
+ * @brief Whether provisioning (FW/PSK/OTP) was already verified this open.
+ * @details Lets per-device activate sequences skip static re-queries.
+ */
+gboolean goodixtls5xx_is_provisioned (FpDevice *dev);
+
+/**
+ * @brief Mark provisioning valid/invalid (e.g. after full activation success
+ * or reset-number mismatch).
+ */
+void goodixtls5xx_set_provisioned (FpDevice *dev,
+                                    gboolean  valid);
+
+/**
+ * @brief Invalidate the cached calibration image (force refresh next scan).
+ */
+void goodixtls5xx_invalidate_calib (FpDevice *dev);
+
+/**
  * @brief Check the reply to a reset command
  *
  * @param dev

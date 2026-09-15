@@ -99,6 +99,13 @@ int goodix_tls_client_read (GoodixTlsServer *self,
                             guint16          length);
 
 /**
+ * @brief Build a GError from the current OpenSSL error queue.
+ *
+ * @return GError * (transfer full)
+ */
+GError *err_from_ssl (void);
+
+/**
  * @brief Shutdown the TLS server
  *
  * @param self context to shutdown
