@@ -49,8 +49,8 @@ typedef struct
   guint8 *reuse_squashed;
 } FpiDeviceGoodixTls5xxPrivate;
 
-#define CALIB_MAX_USES 8
-#define CALIB_MAX_AGE_US (60 * G_USEC_PER_SEC)
+#define CALIB_MAX_USES 5 /* fresher baseline for multi-finger, was 8 */
+#define CALIB_MAX_AGE_US (30 * G_USEC_PER_SEC) /* was 60s */
 
 G_DEFINE_ABSTRACT_TYPE_WITH_PRIVATE (FpiDeviceGoodixTls5xx, fpi_device_goodixtls5xx, FPI_TYPE_DEVICE_GOODIXTLS)
 

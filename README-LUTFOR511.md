@@ -25,7 +25,7 @@ See `git log` / `git diff` for the full change history.
 ## Install on Zorin OS / Ubuntu (fresh machine)
 
 ```bash
-sudo dpkg -i libfprint-2-lutfor-opt_1.94.5-lutfor6_amd64.deb
+sudo dpkg -i libfprint-2-lutfor-opt_1.94.5-lutfor9_amd64.deb
 sudo systemctl restart fprintd
 fprintd-enroll "$USER"   # ~5-10 taps
 fprintd-verify "$USER"   # tap to test
@@ -63,3 +63,9 @@ ninja -C build-snappy-opt
 
 Lutfor <lutfor183.du@gmail.com> — protocol/TLS key reverse engineering,
 driver tuning and packaging.
+
+## Peaceful multi-finger use (lutfor7 tuning)
+- Threshold `28` (was `24`): stricter, less finger-to-finger false accept on 64x80 sensor. If taps reject too often, press firmer/centered, don't lower it first.
+- Calibration `5 uses / 30s` (was `8 / 60s`): fresher baseline per finger, still 1 capture per tap. Fixes cross-finger bleed that caused 70/72 noisy 24B reports.
+- Workflow: `rm -rf` stale DB once -> enroll right-index alone -> `fprintd-verify` until <1s -> then add 2nd finger at 2 angles. Never enroll same finger on Windows + Linux (template master = one OS only).
+- `Device already claimed`: close Settings Fingerprint GUI, then `fprintd-enroll`. Keep autosuspend off via `99-goodix511-power.rules`.
